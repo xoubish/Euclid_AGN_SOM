@@ -1,0 +1,25 @@
+# Ignore the data folder and its contents
+/data/
+
+# Ignore large FITS files and other data products
+*.fits
+*.fit
+*.fts
+*.ecsv
+*.csv
+*.h5
+*.hdf5
+*.sav
+*.npz
+
+# Ignore notebook checkpoints and Python caches
+.ipynb_checkpoints/
+__pycache__/
+*.py[cod]
+
+# Ignore environment and IDE files
+.env
+.venv/
+*.swp
+*.swo
+.DS_Store
