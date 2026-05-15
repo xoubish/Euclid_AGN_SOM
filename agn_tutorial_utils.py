@@ -184,11 +184,40 @@ def fill_nan_nearest(m):
 # ===========================================================================
 # IRSA TAP batched query
 # ===========================================================================
+def tap_query_with_retry(adql, retries=5, base_delay=2.0, async_job=False):
+    """Run a TAP query with exponential backoff for transient failures.
+
+    IRSA's TAP endpoint occasionally returns 502/503/504 or VOTable parse
+    errors under load; these are not query bugs and clear on retry. Set
+    ``async_job=True`` for long queries that need the async TAP endpoint.
+    """
+    import time
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            return Irsa.query_tap(adql, async_job=async_job).to_table()
+        except Exception as exc:
+            last_exc = exc
+            msg = str(exc)
+            transient = any(code in msg for code in ('502', '503', '504', 'Bad Gateway',
+                                                     'Gateway Time-out', 'Service Unavailable',
+                                                     'VOTABLE'))
+            if not transient or attempt == retries - 1:
+                raise
+            delay = base_delay * (2 ** attempt)
+            warnings.warn(f'TAP transient failure (attempt {attempt+1}/{retries}): {exc!r}; '
+                          f'retrying in {delay:.1f}s', RuntimeWarning)
+            time.sleep(delay)
+    raise last_exc  # unreachable, kept for static analysis
+
+
 def batched_query(table, cols, ids, batch=BATCH, id_col='object_id', desc=None):
     """Run an ADQL ``WHERE id IN (...)`` query in batches.
 
     IRSA's TAP service caps SQL length per request, so large ID lists must
     be split. One query per batch, results vstacked, progress via tqdm.
+    Each batch is wrapped with ``tap_query_with_retry`` so transient
+    5xx responses self-heal without losing earlier batches' progress.
     """
     if len(ids) == 0:
         return Table(names=[id_col] + cols)
@@ -199,7 +228,7 @@ def batched_query(table, cols, ids, batch=BATCH, id_col='object_id', desc=None):
     for k in iterator:
         in_list = ','.join(str(int(x)) for x in ids[k:k + batch])
         adql = f'SELECT {cols_sql} FROM {table} WHERE {id_col} IN ({in_list})'
-        out.append(Irsa.query_tap(adql).to_table())
+        out.append(tap_query_with_retry(adql))
     return vstack(out)
 
 
@@ -517,7 +546,7 @@ def query_spectrum_associations(object_ids):
     WHERE objectid IN ({id_list})
     '''
     try:
-        return Irsa.query_tap(query).to_table()
+        return tap_query_with_retry(query)
     except Exception as err:
         print(f'Spectrum association query failed: {err}')
         return Table(names=['objectid', 'path', 'hdu'])
@@ -687,7 +716,7 @@ def query_spe_halpha_measurements(object_ids, cache_path,
           AND spe_line_name = 'Halpha'
         '''
         try:
-            part = Irsa.query_tap(adql).to_table()
+            part = tap_query_with_retry(adql)
         except Exception as err:
             print(f'SPE Halpha query failed for batch {start // batch + 1}: {err}')
             continue
