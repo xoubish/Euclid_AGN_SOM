@@ -612,9 +612,21 @@ def read_spectra_from_associations(assoc, wanted_ids, spectra=None, n_keep=8):
     return spectra
 
 
-def get_n_spectra_for_table(tab, n=8, max_ids=1200, prefer_spec_z=True, batch=250):
-    """Fetch up to `n` spectra for objects in `tab`, prioritising spec-z rows
-    and reusing any cached on-disk extractions before hitting IRSA."""
+def get_Q1_sir_spectra(tab, n=8, max_ids=1200, prefer_spec_z=True,
+                       batch=250, cache_check=True):
+    """Fetch up to ``n`` Q1 SIR 1D spectra for objects in ``tab``.
+
+    Workflow: order rows (spec-z first when available), look up each object_id
+    in the on-disk cache (``SPECTRA_CACHE_DIR``), and for any misses run a
+    batched ADQL query against ``SPECTRA_ASSOC_TABLE`` followed by SAS FITS
+    reads. Returns a dict {object_id: spectrum_table}.
+
+    Parameters
+    ----------
+    cache_check : bool, default True
+        If True, reuse any per-object spectra already in the local cache
+        before hitting IRSA. Set False to skip the cache and re-query.
+    """
     order = np.arange(len(tab))
     if prefer_spec_z and 'z_source' in tab.colnames:
         spec_first = np.asarray(tab['z_source'], dtype=str) == 'spec'
@@ -622,14 +634,17 @@ def get_n_spectra_for_table(tab, n=8, max_ids=1200, prefer_spec_z=True, batch=25
     object_ids = ordered_unique_int(np.asarray(tab['object_id_euclid'])[order])[:max_ids]
 
     spectra, remaining = {}, []
-    for object_id in object_ids:
-        cached = load_cached_spectrum(object_id)
-        if cached is not None:
-            spectra[object_id] = cached
-            if len(spectra) >= n:
-                return {oid: spectra[oid] for oid in object_ids if oid in spectra}
-        else:
-            remaining.append(object_id)
+    if cache_check:
+        for object_id in object_ids:
+            cached = load_cached_spectrum(object_id)
+            if cached is not None:
+                spectra[object_id] = cached
+                if len(spectra) >= n:
+                    return {oid: spectra[oid] for oid in object_ids if oid in spectra}
+            else:
+                remaining.append(object_id)
+    else:
+        remaining = list(object_ids)
 
     for start in range(0, len(remaining), batch):
         if len(spectra) >= n:
@@ -685,17 +700,30 @@ def empty_spe_halpha_table():
     return Table(names=['object_id'] + SPE_HALPHA_QUERY_COLS)
 
 
-def query_spe_halpha_measurements(object_ids, cache_path,
-                                  batch=SPE_HALPHA_BATCH, max_ids=None,
-                                  force_refresh=False):
-    """Query SPE line-feature rows for Halpha. Cached as ECSV at `cache_path`."""
+def get_Q1_spe_halpha(object_ids, cache_path,
+                      batch=SPE_HALPHA_BATCH, max_ids=None,
+                      cache_check=True):
+    """Fetch Q1 SPE Halpha line-feature rows for ``object_ids``.
+
+    Runs a batched ADQL query against ``SPE_LINES_TABLE`` filtered to
+    ``spe_line_name = 'Halpha'``. Results are cached as ECSV at
+    ``cache_path``; subsequent calls reuse the cache unless
+    ``cache_check=False`` is passed.
+
+    Parameters
+    ----------
+    cache_check : bool, default True
+        If True (default) and ``cache_path`` exists, the cached table is
+        returned and no TAP queries are issued. Set False to discard the
+        cache and re-query.
+    """
     object_ids = ordered_unique_int(object_ids)
     if max_ids is not None:
         object_ids = object_ids[:int(max_ids)]
-    if force_refresh and os.path.exists(cache_path):
+    if not cache_check and os.path.exists(cache_path):
         os.remove(cache_path)
-        print(f'force_refresh: removed {cache_path}')
-    if os.path.exists(cache_path):
+        print(f'cache_check=False: removed {cache_path}')
+    if cache_check and os.path.exists(cache_path):
         tab = Table.read(cache_path, format='ascii.ecsv')
         print(f'Loaded cached SPE Halpha measurements: {len(tab):,} rows ({cache_path})')
         return tab
