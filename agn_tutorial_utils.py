@@ -77,7 +77,7 @@ SPE_HALPHA_QUERY_COLS = [
 ]
 
 # Spectra cache / SAS
-SPECTRA_CACHE_DIR = 'data/irsa_spectra_agn'
+SPECTRA_CACHE_DIR = 'data/cache/irsa_spectra_agn'
 SPECTRA_BUCKET = 'nasa-irsa-euclid-q1'
 SPECTRA_ASSOC_TABLE = 'euclid.objectid_spectrafile_association_q1'
 

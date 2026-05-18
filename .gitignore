@@ -1,5 +1,14 @@
-# Ignore the data folder and its contents
-/data/
+# data/ layout:
+#   data/input/  human inputs (AGN catalogs + README). README and .gitkeep tracked; FITS files NOT tracked.
+#   data/cache/  notebook-generated query/spectrum caches. Fully ignored except for .gitkeep.
+/data/*
+!/data/input/
+!/data/cache/
+/data/input/*
+!/data/input/README.txt
+!/data/input/.gitkeep
+/data/cache/*
+!/data/cache/.gitkeep
 
 # Ignore large FITS files and other data products
 *.fits
