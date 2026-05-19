@@ -694,6 +694,108 @@ def mark_halpha_complex(ax, full_range=True):
 
 
 # ===========================================================================
+# MER imaging cutouts via IRSA IBE (server-side cutout, returns small FITS)
+# ===========================================================================
+MER_SIA_COLLECTION = 'euclid_DpdMerBksMosaic'
+
+# Map common band identifiers to the energy_bandpassname returned by SIA.
+MER_BAND_ALIASES = {
+    'VIS': 'VIS', 'Ie': 'VIS', 'I_E': 'VIS',
+    'Y': 'Y', 'NISP-Y': 'Y',
+    'J': 'J', 'NISP-J': 'J',
+    'H': 'H', 'NISP-H': 'H',
+    'G': 'G', 'g': 'G',
+    'R': 'R', 'r': 'R',
+    'I': 'I', 'i': 'I',
+    'Z': 'Z', 'z': 'Z',
+    'U': 'U', 'u': 'U',
+}
+
+
+def _mer_sia_lookup(ra_deg, dec_deg, search_radius_deg=0.005):
+    """Run a single SIA query at (ra, dec) and return the row list once."""
+    import astropy.units as u_
+    rows = Irsa.query_sia(
+        pos=(ra_deg * u_.deg, dec_deg * u_.deg, search_radius_deg * u_.deg),
+        collection=MER_SIA_COLLECTION,
+    )
+    return rows
+
+
+def get_Q1_mer_cutout(ra_deg, dec_deg, band='H', size_arcsec=10.0,
+                     sia_rows=None, verbose=True):
+    """Fetch a Q1 MER mosaic cutout via IRSA's IBE cutout service.
+
+    Cloud-native pattern: SIA query returns the mosaic file URL on IRSA's
+    cloud-hosted IBE; we append ``?center=ra,dec&size=Xarcsec`` to ask the
+    server to return only the cutout (typically ~40 KB gzipped FITS).
+    ``astropy.io.fits.open`` fetches and decompresses the URL in one step.
+
+    Parameters
+    ----------
+    ra_deg, dec_deg : float
+        Sky position in decimal degrees.
+    band : str, default 'H'
+        Filter to fetch. See ``MER_BAND_ALIASES`` for accepted names.
+    size_arcsec : float, default 10
+        Cutout side length in arcsec.
+    sia_rows : astropy.table.Table or None
+        Cached SIA result (for repeated calls at the same position). If
+        ``None``, runs a fresh SIA query.
+    verbose : bool
+        Print the cutout URL being fetched.
+
+    Returns
+    -------
+    dict with keys: ``data`` (2D array), ``header`` (FITS header),
+    ``wcs`` (astropy.wcs.WCS), ``s3_uri`` (the underlying S3 path of the
+    full mosaic), ``cutout_url`` (the HTTPS IBE cutout URL).
+    """
+    from astropy.io import fits as _fits
+    from astropy.wcs import WCS as _WCS
+    import json as _json
+
+    target = MER_BAND_ALIASES.get(band, band)
+    if sia_rows is None:
+        sia_rows = _mer_sia_lookup(ra_deg, dec_deg)
+    matches = [
+        r for r in sia_rows
+        if r['energy_bandpassname'] == target and r['dataproduct_subtype'] == 'science'
+    ]
+    if not matches:
+        bands_seen = sorted({str(r['energy_bandpassname']) for r in sia_rows})
+        raise ValueError(
+            f'No {band!r} (= {target!r}) MER mosaic found at '
+            f'({ra_deg:.4f}, {dec_deg:.4f}). Bands available here: {bands_seen}.'
+        )
+    row = matches[0]
+    base_url = row['access_url']
+    cloud = _json.loads(row['cloud_access'])['aws']
+    s3_uri = f"s3://{cloud['bucket_name']}/{cloud['key']}"
+    cutout_url = (
+        f'{base_url}?center={ra_deg:.6f},{dec_deg:.6f}'
+        f'&size={size_arcsec:.2f}arcsec'
+    )
+    if verbose:
+        print(f'  band {target}: {cutout_url}')
+    with _fits.open(cutout_url) as hdul:
+        sci_idx = next(
+            i for i, h in enumerate(hdul)
+            if h.header.get('NAXIS', 0) >= 2 and h.header.get('NAXIS1', 0) > 0
+        )
+        data = np.asarray(hdul[sci_idx].data, dtype=float)
+        header = hdul[sci_idx].header.copy()
+    return {
+        'band': target,
+        'data': data,
+        'header': header,
+        'wcs': _WCS(header),
+        's3_uri': s3_uri,
+        'cutout_url': cutout_url,
+    }
+
+
+# ===========================================================================
 # SPE Halpha line-feature catalog
 # ===========================================================================
 def empty_spe_halpha_table():
